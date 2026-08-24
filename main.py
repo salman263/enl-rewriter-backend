@@ -18,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = genai.Client(api_key=API_KEY)
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 # ইউজার থেকে কী ধরনের ডেটা আসবে তার একটি মডেল
 class RewriteRequest(BaseModel):
