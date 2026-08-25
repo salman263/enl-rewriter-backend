@@ -6,16 +6,14 @@ import os
 
 app = FastAPI()
 
-# CORS পারমিশন যোগ করা হলো
+# CORS ফিক্স করা হলো (allow_credentials=False করে দেওয়া হয়েছে)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # যেকোনো ওয়েবসাইট থেকে রিকোয়েস্ট অ্যালাউ করবে
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 class RewriteRequest(BaseModel):
     text: str
@@ -23,15 +21,30 @@ class RewriteRequest(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "API is running!"}
+    return {"message": "API is running safely!"}
 
 @app.post("/api/rewrite")
 async def rewrite(request: RewriteRequest):
-    prompt = f"Rewrite the following text in a {request.tone} tone:\n\n{request.text}"
-    
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=prompt,
-    )
-    
-    return {"rewritten_text": response.text}
+    try:
+        # API Key চেক করা
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return {"rewritten_text": "Error: GEMINI_API_KEY is missing in Render settings!"}
+            
+        client = genai.Client(api_key=api_key)
+        
+        # আমরা ডিফল্ট হিসেবে সবচেয়ে স্ট্যাবল মডেলটি ব্যবহার করছি
+        AI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+
+        prompt = f"Rewrite the following text in a {request.tone} tone:\n\n{request.text}"
+        
+        response = client.models.generate_content(
+            model=AI_MODEL,
+            contents=prompt,
+        )
+        
+        return {"rewritten_text": response.text}
+        
+    except Exception as e:
+        # যদি কোনো কারণে ফেইল করে, সার্ভার ক্র্যাশ না করে এরর মেসেজটি ওয়েবসাইটের স্ক্রিনে পাঠিয়ে দেবে
+        return {"rewritten_text": f"Backend Error: {str(e)}"}
