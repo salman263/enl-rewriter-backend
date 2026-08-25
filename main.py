@@ -17,11 +17,11 @@ app.add_middleware(
 class RewriteRequest(BaseModel):
     text: str
     tone: str
-    num_rewrites: int = 1  # নতুন ফিচার: কয়টি রেজাল্ট চাই
+    num_rewrites: int = 1
 
 @app.get("/")
 def read_root():
-    return {"message": "WordAi Advanced Backend is running!"}
+    return {"message": "Semantic SEO Advanced Backend is running!"}
 
 @app.post("/api/rewrite")
 async def rewrite(request: RewriteRequest):
@@ -33,22 +33,26 @@ async def rewrite(request: RewriteRequest):
         client = genai.Client(api_key=api_key)
         AI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
-        # Advanced Prompt Engineering (AI Bypass & Multiple Rewrites)
-        prompt = f"""You are an advanced, human-like AI text rewriter designed to bypass AI detection.
+        # 🚀 Advanced Semantic SEO & NLP Prompt Engineering
+        prompt = f"""You are an Expert SEO Content Writer and NLP (Natural Language Processing) Specialist.
+Your task is to rewrite the text to be perfectly Semantic SEO-optimized and highly human-like to bypass AI detectors.
+
 Original Text: "{request.text}"
 
-Instructions:
-1. Rewrite the text exactly {request.num_rewrites} times to provide different variations.
-2. Tone/Strictness: {request.tone}. 
-   - If "Fluent": Keep the meaning exactly the same, change only a few words (synonyms), keep the original sentence structure.
-   - If "Regular": Rewrite for better flow, change phrasing, but keep the core meaning intact.
-   - If "Creative": Be highly creative, change sentence structures entirely, use dynamic vocabulary, but retain the general idea.
-3. Make the writing sound 100% natural and human. Do not use robotic phrasing.
+Semantic SEO & Writing Rules:
+1. Entities & Intent: Preserve all core entities (names, locations, brands, specific data). Maintain the original search intent.
+2. LSI & Context: Use natural Latent Semantic Indexing (LSI) phrasing. Enhance the topical depth without keyword stuffing.
+3. EEAT & Readability: Write in a highly engaging, authoritative, and concise manner. Avoid fluff, filler words, and passive voice. 
+4. AI Bypass: Ensure the text flows naturally like a Native English speaker. Vary sentence length and structure to avoid robotic patterns.
+5. Tone Constraint: {request.tone}.
+   - If "Fluent" (Conservative): Keep structure similar, improve flow, fix grammar, retain meaning entirely.
+   - If "Regular": Rephrase for better SEO and engagement, modernize vocabulary.
+   - If "Creative" (Adventurous): Highly dynamic sentence restructuring, vivid vocabulary, deeply engaging while keeping core intent.
 
-Output Format:
+Output Formatting Instructions:
 Return EXACTLY {request.num_rewrites} distinct rewritten version(s).
 Separate each version using this exact string: |||
-Do not include any other text, intro, or markdown. Just the versions separated by |||.
+Do not include any intro, outro, HTML, markdown, or extra text. Just the rewritten text versions separated by |||.
 """
         
         response = client.models.generate_content(
@@ -56,10 +60,13 @@ Do not include any other text, intro, or markdown. Just the versions separated b
             contents=prompt,
         )
         
-        # এআইয়ের রেজাল্ট থেকে আলাদা আলাদা অপশনগুলো বের করা
         raw_text = response.text
+        # আলাদা আলাদা অপশনগুলো বের করা
         rewrites = [text.strip() for text in raw_text.split("|||") if text.strip()]
         
+        if not rewrites:
+            return {"error": "AI could not generate the rewrites. Please try again."}
+            
         return {"rewrites": rewrites}
         
     except Exception as e:
