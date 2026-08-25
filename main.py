@@ -36,7 +36,7 @@ async def rewrite(request: RewriteRequest):
         # আমরা ডিফল্ট হিসেবে সবচেয়ে স্ট্যাবল মডেলটি ব্যবহার করছি
         AI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
-        prompt = f"Rewrite the following text in a {request.tone} tone:\n\n{request.text}"
+        prompt = f"Rewrite the following text in a {request.tone} tone. Return ONLY the rewritten text and absolutely nothing else. No intro, no options, no formatting:\n\n{request.text}"
         
         response = client.models.generate_content(
             model=AI_MODEL,
