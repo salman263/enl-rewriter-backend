@@ -18,10 +18,11 @@ class RewriteRequest(BaseModel):
     text: str
     tone: str
     num_rewrites: int = 1
+    mode: str = "rewrite" # নতুন ফিচার: মোড সিলেকশন
 
 @app.get("/")
 def read_root():
-    return {"message": "Semantic SEO Advanced Backend is running!"}
+    return {"message": "AI Bypass & SEO Backend is running!"}
 
 @app.post("/api/rewrite")
 async def rewrite(request: RewriteRequest):
@@ -33,27 +34,42 @@ async def rewrite(request: RewriteRequest):
         client = genai.Client(api_key=api_key)
         AI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
-        # 🚀 Advanced Semantic SEO & NLP Prompt Engineering
-        prompt = f"""You are an Expert SEO Content Writer and NLP (Natural Language Processing) Specialist.
-Your task is to rewrite the text to be perfectly Semantic SEO-optimized and highly human-like to bypass AI detectors.
+        # 🚀 Mode Selection (Rewrite vs Avoid AI Detection)
+        if request.mode == "avoid_ai":
+            prompt = f"""You are an expert AI Detection Bypass Specialist and a highly skilled human writer.
+            Your ultimate goal is to rewrite the provided text so that it scores 100% human on all AI detectors (like Originality.ai, GPTZero, and Turnitin) while maintaining the exact original meaning.
 
-Original Text: "{request.text}"
+            Original Text: "{request.text}"
 
-Semantic SEO & Writing Rules:
-1. Entities & Intent: Preserve all core entities (names, locations, brands, specific data). Maintain the original search intent.
-2. LSI & Context: Use natural Latent Semantic Indexing (LSI) phrasing. Enhance the topical depth without keyword stuffing.
-3. EEAT & Readability: Write in a highly engaging, authoritative, and concise manner. Avoid fluff, filler words, and passive voice. 
-4. AI Bypass: Ensure the text flows naturally like a Native English speaker. Vary sentence length and structure to avoid robotic patterns.
-5. Tone Constraint: {request.tone}.
-   - If "Fluent" (Conservative): Keep structure similar, improve flow, fix grammar, retain meaning entirely.
-   - If "Regular": Rephrase for better SEO and engagement, modernize vocabulary.
-   - If "Creative" (Adventurous): Highly dynamic sentence restructuring, vivid vocabulary, deeply engaging while keeping core intent.
+            Crucial Humanization Rules:
+            1. High Burstiness: Drastically vary sentence lengths. Mix very short, punchy sentences (2-5 words) with longer, complex ones. 
+            2. High Perplexity: Avoid predictable word choices and common AI transition words (e.g., "Furthermore", "In conclusion", "It is important to note", "Delve into"). Use natural, slightly unconventional vocabulary.
+            3. Imperfections & Nuance: Write like a native English speaking human. Use active voice, idiomatic expressions, and natural phrasing. Do not sound robotic or perfectly symmetrical.
+            4. Bypass Level: {request.tone} (1=Basic, 2=Advanced, 3=Maximum Humanization). 
+               - If Maximum, completely restructure the paragraphs, change perspectives slightly if needed, and use highly idiomatic language to guarantee a 100% human score.
 
-Output Formatting Instructions:
-Return EXACTLY {request.num_rewrites} distinct rewritten version(s).
-Separate each version using this exact string: |||
-Do not include any intro, outro, HTML, markdown, or extra text. Just the rewritten text versions separated by |||.
-"""
+            Output Formatting Instructions:
+            Return EXACTLY {request.num_rewrites} distinct rewritten version(s).
+            Separate each version using this exact string: |||
+            Do not include any intro, outro, HTML, markdown, or extra text.
+            """
+        else:
+            prompt = f"""You are an Expert SEO Content Writer and NLP Specialist.
+            Your task is to rewrite the text to be perfectly Semantic SEO-optimized and highly human-like.
+
+            Original Text: "{request.text}"
+
+            Semantic SEO Rules:
+            1. Entities & Intent: Preserve all core entities. Maintain the original search intent.
+            2. LSI & Context: Use natural Latent Semantic Indexing (LSI) phrasing. 
+            3. EEAT & Readability: Write in a highly engaging, authoritative manner.
+            4. Tone Constraint: {request.tone}.
+
+            Output Formatting Instructions:
+            Return EXACTLY {request.num_rewrites} distinct rewritten version(s).
+            Separate each version using this exact string: |||
+            Do not include any extra text.
+            """
         
         response = client.models.generate_content(
             model=AI_MODEL,
@@ -61,7 +77,6 @@ Do not include any intro, outro, HTML, markdown, or extra text. Just the rewritt
         )
         
         raw_text = response.text
-        # আলাদা আলাদা অপশনগুলো বের করা
         rewrites = [text.strip() for text in raw_text.split("|||") if text.strip()]
         
         if not rewrites:
