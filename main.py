@@ -1,93 +1,105 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from google import genai
-import os
+import google.generativeai as genai
 from pymongo import MongoClient
 
 app = FastAPI()
 
+# CORS Setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 🚀 MongoDB Connection Setup
-MONGO_URI = os.environ.get("MONGO_URI")
-client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
-db = client_mongo["zerowordai"] if client_mongo else None
-users_collection = db["users"] if db is not None else None
+# Gemini AI Setup
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-1.5-flash')
 
+# MongoDB Setup
+client = MongoClient(os.environ.get("MONGO_URI"))
+db = client["zerowordai"]
+users_collection = db["users"]
+
+# Request Model
 class RewriteRequest(BaseModel):
     text: str
     tone: str
     num_rewrites: int = 1
     mode: str = "rewrite"
-    userId: str = "guest" # ইউজারের আইডি ফ্রন্টএন্ড থেকে আসবে
-
-@app.get("/")
-def read_root():
-    return {"message": "AI Backend with MongoDB is running!"}
+    userId: str
 
 @app.post("/api/rewrite")
-async def rewrite(request: RewriteRequest):
-    try:
-        # ১. Credit চেক করা (ইউজার ডেটাবেসে আছে কি না)
-        if users_collection is not None and request.userId != "guest":
-            user = users_collection.find_one({"userId": request.userId})
-            
-            # নতুন ইউজার হলে ডেটাবেসে অ্যাকাউন্ট খুলে ৫ ক্রেডিট দেওয়া হবে
-            if not user:
-                users_collection.insert_one({"userId": request.userId, "credits": 5})
-                user = {"credits": 5}
-            
-            # ক্রেডিট ফুরিয়ে গেলে কাজ বন্ধ করে দেবে
-            if user.get("credits", 0) <= 0:
-                return {"error": "Limit Reached! You have run out of free credits. Please upgrade your plan."}
+async def rewrite_text(req: RewriteRequest):
+    # 1. Check User in Database
+    user = users_collection.find_one({"userId": req.userId})
+    if not user:
+        user = {"userId": req.userId, "credits": 5}
+        users_collection.insert_one(user)
+    
+    # 2. Check Credits
+    if user["credits"] <= 0:
+        return {"error": "No credits left! Please upgrade your plan."}
 
-        # ২. AI Generation Logic (আগের মতোই)
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            return {"error": "API Key is missing!"}
-            
-        client = genai.Client(api_key=api_key)
-        AI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
-
-        if request.mode == "avoid_ai":
-            prompt = f"""You are an expert AI Detection Bypass Specialist. Rewrite the text to score 100% human.
-            Original Text: "{request.text}"
-            Rules: High Burstiness, High Perplexity. Do not use robotic words. Bypass Level: {request.tone}.
-            Return EXACTLY {request.num_rewrites} versions separated by |||. No extra text."""
-        else:
-            prompt = f"""You are an Expert SEO Content Writer. Rewrite the text to be Semantic SEO-optimized.
-            Original Text: "{request.text}"
-            Rules: Preserve entities, use LSI keywords naturally. Tone: {request.tone}.
-            Return EXACTLY {request.num_rewrites} versions separated by |||. No extra text."""
+    # 3. 🚀 THE MAGIC: Prompt Selection based on Mode
+    if req.mode == "avoid_ai":
+        # 🛡️ Humanizer Prompt (AI Detection Bypass)
+        prompt = f"""You are an expert human writer and copywriter. Your task is to rewrite the following text so that it completely bypasses all AI detectors (like ZeroGPT, Turnitin, Originality.ai).
         
-        response = client.models.generate_content(
-            model=AI_MODEL,
-            contents=prompt,
+        Follow these strict rules to make it 100% human-like:
+        1. Use high 'burstiness' (mix very short, punchy sentences with longer, flowing ones).
+        2. Use high 'perplexity' (use natural, conversational vocabulary; avoid highly predictable word sequences).
+        3. Do NOT use typical AI buzzwords (e.g., delve, testament, tapestry, crucial, transformative, landscape, realm, unlock, dive).
+        4. Add a slight conversational tone and occasional natural human phrasing.
+        
+        Bypass Strength: {req.tone}.
+        
+        Please provide exactly {req.num_rewrites} different variations of the rewritten text.
+        Separate each variation using EXACTLY this text: "|||VARIATION|||". Do not add numbers like "Variation 1".
+        
+        Original Text:
+        {req.text}
+        """
+    else:
+        # ✏️ Standard Rewrite Prompt
+        prompt = f"""You are an expert SEO content rewriter. Rewrite the following text to be unique, engaging, and highly readable.
+        Tone: {req.tone}.
+        
+        Please provide exactly {req.num_rewrites} different distinct variations.
+        Separate each variation using EXACTLY this text: "|||VARIATION|||". Do not add numbers like "Variation 1".
+        
+        Original Text:
+        {req.text}
+        """
+
+    # 4. Generate Content with Gemini
+    try:
+        response = model.generate_content(prompt)
+        output = response.text
+        
+        # 5. Split Variations
+        variations = [v.strip() for v in output.split("|||VARIATION|||") if v.strip()]
+        
+        if not variations:
+            variations = [output.strip()]
+            
+        # 6. Deduct 1 Credit
+        users_collection.update_one(
+            {"userId": req.userId},
+            {"$inc": {"credits": -1}}
         )
         
-        raw_text = response.text
-        rewrites = [text.strip() for text in raw_text.split("|||") if text.strip()]
+        # 7. Get Updated Credits
+        updated_user = users_collection.find_one({"userId": req.userId})
         
-        if not rewrites:
-            return {"error": "AI could not generate the rewrites. Please try again."}
-            
-        # ৩. সফলভাবে রিরাইট হওয়ার পর ১টি ক্রেডিট কেটে নেওয়া
-        credits_left = "Unlimited"
-        if users_collection is not None and request.userId != "guest":
-            users_collection.update_one(
-                {"userId": request.userId},
-                {"$inc": {"credits": -1}}
-            )
-            credits_left = user.get("credits", 5) - 1
-
-        return {"rewrites": rewrites, "credits_left": credits_left}
+        return {
+            "rewrites": variations[:req.num_rewrites],
+            "credits_left": updated_user["credits"]
+        }
         
     except Exception as e:
-        return {"error": f"Backend Error: {str(e)}"}
+        return {"error": f"Failed to generate text: {str(e)}"}
