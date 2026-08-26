@@ -33,6 +33,18 @@ class RewriteRequest(BaseModel):
 def read_root():
     return {"message": "AI Backend with MongoDB is running!"}
 
+# 🆕 নতুন যুক্ত করা হলো: পেজ রিলোড দিলে আসল ক্রেডিট দেখানোর জন্য
+@app.get("/api/user/{user_id}")
+async def get_user_credits(user_id: str):
+    try:
+        if users_collection is not None:
+            user = users_collection.find_one({"userId": user_id})
+            if user:
+                return {"credits": user.get("credits", 0)}
+        return {"credits": 5} # নতুন ইউজার হলে ডিফল্ট ৫ দেখাবে
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.post("/api/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
@@ -56,7 +68,7 @@ async def rewrite_text(req: RewriteRequest):
             
         genai.configure(api_key=api_key)
         
-        # আপনার আইডিয়া অনুযায়ী ডায়নামিক মডেল (Render থেকে আসবে)
+        # ডায়নামিক মডেল (Render থেকে আসবে)
         ai_model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")
         model = genai.GenerativeModel(ai_model_name)
 
