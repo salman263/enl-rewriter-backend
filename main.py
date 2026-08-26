@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 import os
+from pymongo import MongoClient
 
 app = FastAPI()
 
@@ -14,19 +15,40 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 🚀 MongoDB Connection Setup
+MONGO_URI = os.environ.get("MONGO_URI")
+client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
+db = client_mongo["zerowordai"] if client_mongo else None
+users_collection = db["users"] if db is not None else None
+
 class RewriteRequest(BaseModel):
     text: str
     tone: str
     num_rewrites: int = 1
-    mode: str = "rewrite" # নতুন ফিচার: মোড সিলেকশন
+    mode: str = "rewrite"
+    userId: str = "guest" # ইউজারের আইডি ফ্রন্টএন্ড থেকে আসবে
 
 @app.get("/")
 def read_root():
-    return {"message": "AI Bypass & SEO Backend is running!"}
+    return {"message": "AI Backend with MongoDB is running!"}
 
 @app.post("/api/rewrite")
 async def rewrite(request: RewriteRequest):
     try:
+        # ১. Credit চেক করা (ইউজার ডেটাবেসে আছে কি না)
+        if users_collection is not None and request.userId != "guest":
+            user = users_collection.find_one({"userId": request.userId})
+            
+            # নতুন ইউজার হলে ডেটাবেসে অ্যাকাউন্ট খুলে ৫ ক্রেডিট দেওয়া হবে
+            if not user:
+                users_collection.insert_one({"userId": request.userId, "credits": 5})
+                user = {"credits": 5}
+            
+            # ক্রেডিট ফুরিয়ে গেলে কাজ বন্ধ করে দেবে
+            if user.get("credits", 0) <= 0:
+                return {"error": "Limit Reached! You have run out of free credits. Please upgrade your plan."}
+
+        # ২. AI Generation Logic (আগের মতোই)
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             return {"error": "API Key is missing!"}
@@ -34,42 +56,16 @@ async def rewrite(request: RewriteRequest):
         client = genai.Client(api_key=api_key)
         AI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
-        # 🚀 Mode Selection (Rewrite vs Avoid AI Detection)
         if request.mode == "avoid_ai":
-            prompt = f"""You are an expert AI Detection Bypass Specialist and a highly skilled human writer.
-            Your ultimate goal is to rewrite the provided text so that it scores 100% human on all AI detectors (like Originality.ai, GPTZero, and Turnitin) while maintaining the exact original meaning.
-
+            prompt = f"""You are an expert AI Detection Bypass Specialist. Rewrite the text to score 100% human.
             Original Text: "{request.text}"
-
-            Crucial Humanization Rules:
-            1. High Burstiness: Drastically vary sentence lengths. Mix very short, punchy sentences (2-5 words) with longer, complex ones. 
-            2. High Perplexity: Avoid predictable word choices and common AI transition words (e.g., "Furthermore", "In conclusion", "It is important to note", "Delve into"). Use natural, slightly unconventional vocabulary.
-            3. Imperfections & Nuance: Write like a native English speaking human. Use active voice, idiomatic expressions, and natural phrasing. Do not sound robotic or perfectly symmetrical.
-            4. Bypass Level: {request.tone} (1=Basic, 2=Advanced, 3=Maximum Humanization). 
-               - If Maximum, completely restructure the paragraphs, change perspectives slightly if needed, and use highly idiomatic language to guarantee a 100% human score.
-
-            Output Formatting Instructions:
-            Return EXACTLY {request.num_rewrites} distinct rewritten version(s).
-            Separate each version using this exact string: |||
-            Do not include any intro, outro, HTML, markdown, or extra text.
-            """
+            Rules: High Burstiness, High Perplexity. Do not use robotic words. Bypass Level: {request.tone}.
+            Return EXACTLY {request.num_rewrites} versions separated by |||. No extra text."""
         else:
-            prompt = f"""You are an Expert SEO Content Writer and NLP Specialist.
-            Your task is to rewrite the text to be perfectly Semantic SEO-optimized and highly human-like.
-
+            prompt = f"""You are an Expert SEO Content Writer. Rewrite the text to be Semantic SEO-optimized.
             Original Text: "{request.text}"
-
-            Semantic SEO Rules:
-            1. Entities & Intent: Preserve all core entities. Maintain the original search intent.
-            2. LSI & Context: Use natural Latent Semantic Indexing (LSI) phrasing. 
-            3. EEAT & Readability: Write in a highly engaging, authoritative manner.
-            4. Tone Constraint: {request.tone}.
-
-            Output Formatting Instructions:
-            Return EXACTLY {request.num_rewrites} distinct rewritten version(s).
-            Separate each version using this exact string: |||
-            Do not include any extra text.
-            """
+            Rules: Preserve entities, use LSI keywords naturally. Tone: {request.tone}.
+            Return EXACTLY {request.num_rewrites} versions separated by |||. No extra text."""
         
         response = client.models.generate_content(
             model=AI_MODEL,
@@ -82,7 +78,16 @@ async def rewrite(request: RewriteRequest):
         if not rewrites:
             return {"error": "AI could not generate the rewrites. Please try again."}
             
-        return {"rewrites": rewrites}
+        # ৩. সফলভাবে রিরাইট হওয়ার পর ১টি ক্রেডিট কেটে নেওয়া
+        credits_left = "Unlimited"
+        if users_collection is not None and request.userId != "guest":
+            users_collection.update_one(
+                {"userId": request.userId},
+                {"$inc": {"credits": -1}}
+            )
+            credits_left = user.get("credits", 5) - 1
+
+        return {"rewrites": rewrites, "credits_left": credits_left}
         
     except Exception as e:
         return {"error": f"Backend Error: {str(e)}"}
