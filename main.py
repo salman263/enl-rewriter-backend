@@ -1,4 +1,7 @@
 import os
+import random
+import string
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -25,17 +28,17 @@ MONGO_URI = os.environ.get("MONGO_URI")
 client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
 db = client_mongo["zerowordai"] if client_mongo else None
 
-# Collections
 users_collection = db["users"] if db is not None else None
 plans_collection = db["plans"] if db is not None else None
 analytics_collection = db["analytics"] if db is not None else None
+coupons_collection = db["coupons"] if db is not None else None 
 
 @app.get("/")
 def read_root(): 
     return {"message": "ZeroWordAi Ultimate Backend is running smoothly!"}
 
 # ==========================================
-# 📧 3. USER EMAIL SYNC ROUTE (New)
+# 📧 3. USER EMAIL SYNC ROUTE
 # ==========================================
 class SyncUserRequest(BaseModel):
     userId: str
@@ -47,17 +50,16 @@ async def sync_user(req: SyncUserRequest):
         if users_collection is not None:
             user = users_collection.find_one({"userId": req.userId})
             if user:
-                # ইউজার আগে থেকেই থাকলে শুধু ইমেইল আপডেট করবে (লিমিট নষ্ট করবে না)
                 users_collection.update_one({"userId": req.userId}, {"$set": {"email": req.email}})
             else:
-                # একদম নতুন ইউজার হলে Starter প্ল্যান দিয়ে সেভ করবে
                 users_collection.insert_one({
                     "userId": req.userId, 
                     "email": req.email, 
                     "seo_words": 50000, 
                     "bypass_words": 25000, 
                     "plan": "Starter", 
-                    "banned": False
+                    "banned": False,
+                    "expiry_date": None
                 })
             return {"success": True}
         return {"error": "DB error"}
@@ -92,23 +94,20 @@ class PlanModel(BaseModel):
     bypass_words: int
     features: list[str] = []
     sort_order: int = 99
+    duration_days: int = 30
 
 @app.get("/api/plans")
 async def get_plans():
     try:
         if plans_collection is not None:
             plans = list(plans_collection.find({}, {"_id": 0}))
-            
             if not plans:
                 default_plans = [
-                    {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Sentence and phrase level rewriting"], "sort_order": 1},
-                    {"planId": "power", "name": "Power", "price": 57, "seo_words": 3000000, "bypass_words": 250000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Bulk article rewriting", "API access"], "sort_order": 2},
-                    {"planId": "enterprise", "name": "Enterprise", "price": 0, "seo_words": 9999999, "bypass_words": 9999999, "features": ["High volume usage", "Increased throughput", "White Labeled Integration", "Multiple user accounts", "Customized rewrites", "Account manager"], "sort_order": 3}
+                    {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection"], "sort_order": 1, "duration_days": 30},
+                    {"planId": "power", "name": "Power", "price": 57, "seo_words": 3000000, "bypass_words": 250000, "features": ["API access"], "sort_order": 2, "duration_days": 30}
                 ]
                 plans_collection.insert_many(default_plans)
                 plans = default_plans
-            
-            # 🚀 পজিশন অনুযায়ী সাজানো
             plans.sort(key=lambda x: x.get("sort_order", 99))
             return {"plans": plans}
         return {"plans": []}
@@ -130,7 +129,51 @@ async def delete_plan(plan_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# 👥 6. USER MANAGEMENT ROUTES
+# 🎁 6. COUPON MANAGEMENT (AppSumo)
+# ==========================================
+class GenerateCouponReq(BaseModel):
+    plan_name: str
+    count: int
+    prefix: str = "SUMO"
+
+@app.post("/api/admin/generate-coupons")
+async def generate_coupons(req: GenerateCouponReq):
+    try:
+        if coupons_collection is not None and plans_collection is not None:
+            plan = plans_collection.find_one({"name": req.plan_name})
+            if not plan: 
+                return {"error": "Plan not found!"}
+
+            new_coupons = []
+            for _ in range(req.count):
+                random_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+                full_code = f"{req.prefix.upper()}-{random_code}"
+                new_coupons.append({
+                    "code": full_code, 
+                    "plan_name": req.plan_name, 
+                    "seo_words": plan.get("seo_words", 0), 
+                    "bypass_words": plan.get("bypass_words", 0),
+                    "duration_days": plan.get("duration_days", 30),
+                    "is_used": False, 
+                    "used_by": None, 
+                    "created_at": datetime.now().isoformat()
+                })
+            
+            coupons_collection.insert_many(new_coupons)
+            return {"success": True, "generated": req.count}
+        return {"error": "DB Error"}
+    except Exception as e: 
+        return {"error": str(e)}
+
+@app.get("/api/admin/coupons")
+async def get_coupons():
+    if coupons_collection is not None:
+        coupons = list(coupons_collection.find({}, {"_id": 0}).sort("created_at", -1))
+        return {"coupons": coupons}
+    return {"coupons": []}
+
+# ==========================================
+# 👥 7. USER MANAGEMENT ROUTES
 # ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
@@ -141,7 +184,8 @@ async def get_user_data(user_id: str):
                 "seo_words": user.get("seo_words", 50000), 
                 "bypass_words": user.get("bypass_words", 25000), 
                 "plan": user.get("plan", "Starter"), 
-                "banned": user.get("banned", False)
+                "banned": user.get("banned", False),
+                "expiry_date": user.get("expiry_date")
             }
     return {"seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
 
@@ -176,7 +220,7 @@ async def delete_user(user_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# ✍️ 7. CORE AI REWRITE ROUTE (With Word Limits)
+# ✍️ 8. CORE AI REWRITE ROUTE
 # ==========================================
 class RewriteRequest(BaseModel):
     text: str
@@ -188,7 +232,6 @@ class RewriteRequest(BaseModel):
 @app.post("/api/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        # 1. ইনপুট টেক্সটের শব্দ গণনা
         input_word_count = len(req.text.split())
         if input_word_count == 0: 
             return {"error": "Text cannot be empty."}
@@ -196,7 +239,6 @@ async def rewrite_text(req: RewriteRequest):
         target_limit_field = "seo_words" if req.mode == "rewrite" else "bypass_words"
         limit_name = "SEO Rewrite" if req.mode == "rewrite" else "AI Bypass"
 
-        # 2. ইউজার ভেরিফিকেশন ও লিমিট চেক
         if users_collection is not None and req.userId != "guest":
             user = users_collection.find_one({"userId": req.userId})
             if not user:
@@ -204,13 +246,12 @@ async def rewrite_text(req: RewriteRequest):
                 users_collection.insert_one(user)
             
             if user.get("banned", False) == True: 
-                return {"error": "Your account has been banned by the administrator."}
+                return {"error": "Your account has been banned."}
             
             current_words_left = user.get(target_limit_field, 0)
             if current_words_left < input_word_count:
                 return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}, but your text has {input_word_count} words."}
 
-        # 3. Gemini API Configuration
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key: 
             return {"error": "API Key is missing!"}
@@ -218,20 +259,17 @@ async def rewrite_text(req: RewriteRequest):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
         
-        # 4. প্রম্পট সিলেক্ট
         if req.mode == "avoid_ai":
             prompt = f'Expert AI Detection Bypass Specialist. Rewrite to score 100% human. Rules: High Burstiness. Text: "{req.text}". Bypass: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.' 
         else:
             prompt = f'Expert SEO Writer. Semantic SEO-optimized. Text: "{req.text}". Tone: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
 
-        # 5. AI Generation
         response = model.generate_content(prompt)
         output = response.text
         variations = [v.strip() for v in output.split("|||VARIATION|||") if v.strip()]
         if not variations: 
             variations = [output.strip()]
             
-        # 6. ডাটাবেস থেকে শব্দ কাটা
         words_left = "Unlimited"
         if users_collection is not None and req.userId != "guest":
             users_collection.update_one(
@@ -241,7 +279,6 @@ async def rewrite_text(req: RewriteRequest):
             updated_user = users_collection.find_one({"userId": req.userId})
             words_left = updated_user.get(target_limit_field, 0)
         
-        # 7. Analytics আপডেট
         if analytics_collection is not None:
             analytics_collection.update_one(
                 {"_id": "global_stats"}, 
