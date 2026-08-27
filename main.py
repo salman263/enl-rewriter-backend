@@ -1,6 +1,7 @@
 import os
 import random
 import string
+import uuid
 from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,10 +33,11 @@ users_collection = db["users"] if db is not None else None
 plans_collection = db["plans"] if db is not None else None
 analytics_collection = db["analytics"] if db is not None else None
 coupons_collection = db["coupons"] if db is not None else None 
+saved_articles_collection = db["saved_articles"] if db is not None else None # 🚀 NEW: Saved Articles DB
 
 @app.get("/")
 def read_root(): 
-    return {"message": "ZeroWordAi Backend (With Bulk Delete Coupons)"}
+    return {"message": "ZeroWordAi Backend (With Saved Articles)"}
 
 # ==========================================
 # 📧 3. USER EMAIL SYNC ROUTE
@@ -163,7 +165,6 @@ async def get_coupons():
         return {"coupons": coupons}
     return {"coupons": []}
 
-# 🚀 NEW: Delete Single Coupon
 @app.delete("/api/admin/coupons/{code}")
 async def delete_coupon(code: str):
     if coupons_collection is not None:
@@ -171,7 +172,6 @@ async def delete_coupon(code: str):
         return {"success": True}
     return {"error": "DB error"}
 
-# 🚀 NEW: Bulk Delete ALL Coupons
 @app.delete("/api/admin/coupons-bulk")
 async def bulk_delete_coupons():
     if coupons_collection is not None:
@@ -213,7 +213,48 @@ async def redeem_coupon(req: RedeemCouponReq):
         return {"error": str(e)}
 
 # ==========================================
-# 👥 7. USER MANAGEMENT ROUTES
+# 💾 7. SAVED ARTICLES ROUTES (NEW)
+# ==========================================
+class SaveArticleReq(BaseModel):
+    userId: str
+    original_text: str
+    rewritten_text: str
+    mode: str
+
+@app.post("/api/saved-articles")
+async def save_article(req: SaveArticleReq):
+    try:
+        if saved_articles_collection is not None:
+            article = {
+                "articleId": str(uuid.uuid4()),
+                "userId": req.userId,
+                "original_text": req.original_text,
+                "rewritten_text": req.rewritten_text,
+                "mode": req.mode,
+                "created_at": datetime.now().isoformat()
+            }
+            saved_articles_collection.insert_one(article)
+            return {"success": True}
+        return {"error": "DB error"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/saved-articles/{user_id}")
+async def get_saved_articles(user_id: str):
+    if saved_articles_collection is not None:
+        articles = list(saved_articles_collection.find({"userId": user_id}, {"_id": 0}).sort("created_at", -1))
+        return {"articles": articles}
+    return {"articles": []}
+
+@app.delete("/api/saved-articles/{article_id}")
+async def delete_saved_article(article_id: str):
+    if saved_articles_collection is not None:
+        saved_articles_collection.delete_one({"articleId": article_id})
+        return {"success": True}
+    return {"error": "DB error"}
+
+# ==========================================
+# 👥 8. USER MANAGEMENT ROUTES
 # ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
@@ -260,7 +301,7 @@ async def delete_user(user_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# ✍️ 8. CORE AI REWRITE ROUTE
+# ✍️ 9. CORE AI REWRITE ROUTE
 # ==========================================
 class RewriteRequest(BaseModel):
     text: str
