@@ -33,11 +33,11 @@ users_collection = db["users"] if db is not None else None
 plans_collection = db["plans"] if db is not None else None
 analytics_collection = db["analytics"] if db is not None else None
 coupons_collection = db["coupons"] if db is not None else None 
-saved_articles_collection = db["saved_articles"] if db is not None else None # 🚀 NEW: Saved Articles DB
+saved_articles_collection = db["saved_articles"] if db is not None else None 
 
 @app.get("/")
 def read_root(): 
-    return {"message": "ZeroWordAi Backend (With Saved Articles)"}
+    return {"message": "ZeroWordAi Backend (With Strict Prompting)"}
 
 # ==========================================
 # 📧 3. USER EMAIL SYNC ROUTE
@@ -213,7 +213,7 @@ async def redeem_coupon(req: RedeemCouponReq):
         return {"error": str(e)}
 
 # ==========================================
-# 💾 7. SAVED ARTICLES ROUTES (NEW)
+# 💾 7. SAVED ARTICLES ROUTES
 # ==========================================
 class SaveArticleReq(BaseModel):
     userId: str
@@ -301,7 +301,7 @@ async def delete_user(user_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# ✍️ 9. CORE AI REWRITE ROUTE
+# ✍️ 9. CORE AI REWRITE ROUTE (UPDATED PROMPT)
 # ==========================================
 class RewriteRequest(BaseModel):
     text: str
@@ -340,10 +340,11 @@ async def rewrite_text(req: RewriteRequest):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
         
+        # 🚀 NEW STRICT PROMPTS TO AVOID MARKDOWN
         if req.mode == "avoid_ai":
-            prompt = f'Expert AI Detection Bypass Specialist. Rewrite to score 100% human. Rules: High Burstiness. Text: "{req.text}". Bypass: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.' 
+            prompt = f'Act as an expert human writer. Rewrite the text to bypass AI detection (100% human score). Rules: 1. Maintain the exact same paragraph structure as the original text. 2. DO NOT use any markdown formatting (no #, no *, no **). Output plain text only. Text: "{req.text}". Tone: {req.tone}. Return exactly {req.num_rewrites} versions separated by |||VARIATION|||.' 
         else:
-            prompt = f'Expert SEO Writer. Semantic SEO-optimized. Text: "{req.text}". Tone: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
+            prompt = f'Act as an expert SEO writer. Rewrite the text for semantic SEO. Rules: 1. Maintain the exact same paragraph structure as the original text. 2. DO NOT use any markdown formatting (no #, no *, no **). Output plain text only. Text: "{req.text}". Tone: {req.tone}. Return exactly {req.num_rewrites} versions separated by |||VARIATION|||.'
 
         response = model.generate_content(prompt)
         output = response.text
