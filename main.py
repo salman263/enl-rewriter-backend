@@ -15,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🚀 MONGODB SETUP
 MONGO_URI = os.environ.get("MONGO_URI")
 client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
 db = client_mongo["zerowordai"] if client_mongo else None
@@ -24,7 +23,7 @@ plans_collection = db["plans"] if db is not None else None
 analytics_collection = db["analytics"] if db is not None else None
 
 @app.get("/")
-def read_root(): return {"message": "Backend running!"}
+def read_root(): return {"message": "Backend running with Plan Sorting!"}
 
 @app.get("/api/admin/analytics")
 async def get_analytics():
@@ -40,7 +39,7 @@ async def get_analytics():
     except Exception as e: return {"error": str(e)}
 
 # ==========================================
-# 💳 PLAN MANAGEMENT (Words + Features)
+# 💳 PLAN MANAGEMENT (With Sort Order)
 # ==========================================
 class PlanModel(BaseModel):
     planId: str
@@ -48,7 +47,8 @@ class PlanModel(BaseModel):
     price: int
     seo_words: int
     bypass_words: int
-    features: list[str] = []  # 🚀 নতুন: ফিচার লিস্ট যুক্ত করা হলো
+    features: list[str] = []
+    sort_order: int = 99  # 🚀 নতুন: পজিশন সেট করার জন্য
 
 @app.get("/api/plans")
 async def get_plans():
@@ -57,12 +57,15 @@ async def get_plans():
             plans = list(plans_collection.find({}, {"_id": 0}))
             if not plans:
                 default_plans = [
-                    {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Sentence and phrase level rewriting"]},
-                    {"planId": "power", "name": "Power", "price": 57, "seo_words": 3000000, "bypass_words": 250000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Bulk article rewriting", "API access"]},
-                    {"planId": "enterprise", "name": "Enterprise", "price": 0, "seo_words": 9999999, "bypass_words": 9999999, "features": ["High volume usage", "Increased throughput", "White Labeled Integration", "Multiple user accounts", "Customized rewrites", "Account manager"]}
+                    {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection", "AI-powered rewriter"], "sort_order": 1},
+                    {"planId": "power", "name": "Power", "price": 57, "seo_words": 3000000, "bypass_words": 250000, "features": ["Pass AI detection", "AI-powered rewriter", "API access"], "sort_order": 2},
+                    {"planId": "enterprise", "name": "Enterprise", "price": 0, "seo_words": 9999999, "bypass_words": 9999999, "features": ["High volume usage", "Account manager"], "sort_order": 3}
                 ]
                 plans_collection.insert_many(default_plans)
                 plans = default_plans
+            
+            # 🚀 প্ল্যানগুলোকে sort_order অনুযায়ী সাজিয়ে পাঠানো হবে
+            plans.sort(key=lambda x: x.get("sort_order", 99))
             return {"plans": plans}
         return {"plans": []}
     except Exception as e: return {"error": str(e)}
@@ -82,14 +85,14 @@ async def delete_plan(plan_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# 👥 USER MANAGEMENT & REWRITE (আগের মতোই)
+# 👥 USER MANAGEMENT & REWRITE (Unchanged)
 # ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
     if users_collection is not None:
         user = users_collection.find_one({"userId": user_id})
-        if user: return {"seo_words": user.get("seo_words", 5000), "bypass_words": user.get("bypass_words", 1000), "plan": user.get("plan", "Starter"), "banned": user.get("banned", False)}
-    return {"seo_words": 5000, "bypass_words": 1000, "plan": "Starter", "banned": False}
+        if user: return {"seo_words": user.get("seo_words", 50000), "bypass_words": user.get("bypass_words", 25000), "plan": user.get("plan", "Starter"), "banned": user.get("banned", False)}
+    return {"seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
 
 @app.get("/api/admin/users")
 async def get_all_users():
@@ -130,9 +133,7 @@ async def rewrite_text(req: RewriteRequest):
             if not user:
                 user = {"userId": req.userId, "seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
                 users_collection.insert_one(user)
-            
             if user.get("banned", False) == True: return {"error": "Account banned."}
-            
             current_words_left = user.get(target_limit_field, 0)
             if current_words_left < input_word_count:
                 return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}."}
