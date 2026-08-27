@@ -15,56 +15,109 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 🚀 MONGODB SETUP (WITH NEW COLLECTIONS)
 MONGO_URI = os.environ.get("MONGO_URI")
 client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
 db = client_mongo["zerowordai"] if client_mongo else None
 users_collection = db["users"] if db is not None else None
+plans_collection = db["plans"] if db is not None else None # নতুন: প্ল্যানের জন্য
+analytics_collection = db["analytics"] if db is not None else None # নতুন: অ্যানালিটিক্সের জন্য
 
 @app.get("/")
 def read_root():
-    return {"message": "AI Backend with Ultimate Admin Control is running!"}
+    return {"message": "AI Backend with Dynamic Plans & Analytics is running!"}
 
-# 1. 🔍 Get User Data
+# ==========================================
+# 📊 1. ANALYTICS ROUTE
+# ==========================================
+@app.get("/api/admin/analytics")
+async def get_analytics():
+    try:
+        total_users = users_collection.count_documents({}) if users_collection is not None else 0
+        stats = analytics_collection.find_one({"_id": "global_stats"}) if analytics_collection is not None else None
+        total_rewrites = stats.get("total_rewrites", 0) if stats else 0
+        
+        return {
+            "total_users": total_users,
+            "total_rewrites": total_rewrites,
+            "active_database": "MongoDB Atlas",
+            "ai_engine": os.environ.get("GEMINI_MODEL", "gemini-pro")
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# ==========================================
+# 💳 2. DYNAMIC PLAN MANAGEMENT ROUTES
+# ==========================================
+class PlanModel(BaseModel):
+    planId: str
+    name: str
+    price: int
+    credits: int
+    features: list[str]
+
+# পাবলিক রাউট: প্রাইসিং পেজে প্ল্যান দেখানোর জন্য
+@app.get("/api/plans")
+async def get_plans():
+    try:
+        if plans_collection is not None:
+            plans = list(plans_collection.find({}, {"_id": 0}))
+            # যদি ডেটাবেসে কোনো প্ল্যান না থাকে, তবে ডিফল্ট প্ল্যানগুলো তৈরি করে নেবে
+            if not plans:
+                default_plans = [
+                    {"planId": "free", "name": "Free Plan", "price": 0, "credits": 5, "features": ["5 Free Credits", "Standard SEO Rewrite", "Basic Humanizer"]},
+                    {"planId": "pro", "name": "Pro Plan", "price": 19, "credits": 100, "features": ["100 Credits / month", "Advanced AI Bypass", "Priority Speed"]},
+                    {"planId": "enterprise", "name": "Enterprise", "price": 49, "credits": 9999, "features": ["Unlimited Credits", "Max Human Bypass", "24/7 VIP Support"]}
+                ]
+                plans_collection.insert_many(default_plans)
+                plans = default_plans
+            return {"plans": plans}
+        return {"plans": []}
+    except Exception as e:
+        return {"error": str(e)}
+
+# অ্যাডমিন রাউট: নতুন প্ল্যান তৈরি বা আপডেট করার জন্য
+@app.post("/api/admin/plans")
+async def save_plan(req: PlanModel):
+    try:
+        if plans_collection is not None:
+            plans_collection.update_one(
+                {"planId": req.planId},
+                {"$set": req.dict()},
+                upsert=True
+            )
+            return {"success": True, "message": "Plan saved successfully!"}
+        return {"error": "DB not connected"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# অ্যাডমিন রাউট: প্ল্যান ডিলিট করার জন্য
+@app.delete("/api/admin/plans/{plan_id}")
+async def delete_plan(plan_id: str):
+    try:
+        if plans_collection is not None:
+            plans_collection.delete_one({"planId": plan_id})
+            return {"success": True, "message": "Plan deleted!"}
+        return {"error": "DB error"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ==========================================
+# 👥 3. USER MANAGEMENT ROUTES (আগেরগুলোই)
+# ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
-    try:
-        if users_collection is not None:
-            user = users_collection.find_one({"userId": user_id})
-            if user:
-                return {
-                    "credits": user.get("credits", 5),
-                    "plan": user.get("plan", "Free"),
-                    "banned": user.get("banned", False)
-                }
-        return {"credits": 5, "plan": "Free", "banned": False}
-    except Exception as e:
-        return {"error": str(e)}
+    if users_collection is not None:
+        user = users_collection.find_one({"userId": user_id})
+        if user: return {"credits": user.get("credits", 5), "plan": user.get("plan", "Free"), "banned": user.get("banned", False)}
+    return {"credits": 5, "plan": "Free", "banned": False}
 
-# 2. 👑 Get All Users
 @app.get("/api/admin/users")
 async def get_all_users():
-    try:
-        if users_collection is not None:
-            all_users = list(users_collection.find({}, {"_id": 0}))
-            return {"users": all_users}
-        return {"users": []}
-    except Exception as e:
-        return {"error": str(e)}
-
-# 3. 💳 Update Plan from Pricing Page
-class PlanUpgradeRequest(BaseModel):
-    userId: str
-    plan: str
-    credits: int
-
-@app.post("/api/admin/upgrade-plan")
-async def upgrade_plan(req: PlanUpgradeRequest):
     if users_collection is not None:
-        users_collection.update_one({"userId": req.userId}, {"$set": {"plan": req.plan, "credits": req.credits}})
-        return {"success": True}
-    return {"error": "DB not connected"}
+        return {"users": list(users_collection.find({}, {"_id": 0}))}
+    return {"users": []}
 
-# 4. 🚀 ULTIMATE ADMIN ACTION ROUTE (Set Credits, Ban, Unban)
 class AdminActionRequest(BaseModel):
     userId: str
     plan: str
@@ -73,29 +126,21 @@ class AdminActionRequest(BaseModel):
 
 @app.post("/api/admin/super-update")
 async def super_update_user(req: AdminActionRequest):
-    try:
-        if users_collection is not None:
-            users_collection.update_one(
-                {"userId": req.userId},
-                {"$set": {"plan": req.plan, "credits": req.credits, "banned": req.banned}}
-            )
-            return {"success": True, "message": "User updated successfully!"}
-        return {"error": "Database not connected"}
-    except Exception as e:
-        return {"error": str(e)}
+    if users_collection is not None:
+        users_collection.update_one({"userId": req.userId}, {"$set": {"plan": req.plan, "credits": req.credits, "banned": req.banned}})
+        return {"success": True}
+    return {"error": "DB Error"}
 
-# 5. 🗑️ DELETE USER ROUTE
 @app.delete("/api/admin/delete-user/{user_id}")
 async def delete_user(user_id: str):
-    try:
-        if users_collection is not None:
-            users_collection.delete_one({"userId": user_id})
-            return {"success": True, "message": "User deleted!"}
-        return {"error": "DB error"}
-    except Exception as e:
-        return {"error": str(e)}
+    if users_collection is not None:
+        users_collection.delete_one({"userId": user_id})
+        return {"success": True}
+    return {"error": "DB error"}
 
-# 6. ✍️ REWRITE ROUTE (With Ban Protection)
+# ==========================================
+# ✍️ 4. REWRITE ROUTE (With Analytics Tracking)
+# ==========================================
 class RewriteRequest(BaseModel):
     text: str
     tone: str
@@ -111,11 +156,8 @@ async def rewrite_text(req: RewriteRequest):
             if not user:
                 user = {"userId": req.userId, "credits": 5, "plan": "Free", "banned": False}
                 users_collection.insert_one(user)
-            
-            # 🚨 BAN CHECK
             if user.get("banned", False) == True:
-                return {"error": "Your account has been banned by the administrator. Contact support."}
-
+                return {"error": "Your account has been banned by the administrator."}
             if user.get("credits", 0) <= 0:
                 return {"error": "Limit Reached! Please upgrade your plan."}
 
@@ -139,6 +181,14 @@ async def rewrite_text(req: RewriteRequest):
         if users_collection is not None and req.userId != "guest":
             users_collection.update_one({"userId": req.userId}, {"$inc": {"credits": -1}})
             credits_left = users_collection.find_one({"userId": req.userId}).get("credits", 0)
+        
+        # 🚀 NEW: ANALYTICS TRACKING - মোট জেনারেট সংখ্যা ১ করে বাড়িয়ে দেবে
+        if analytics_collection is not None:
+            analytics_collection.update_one(
+                {"_id": "global_stats"},
+                {"$inc": {"total_rewrites": 1}},
+                upsert=True
+            )
         
         return {"rewrites": variations[:req.num_rewrites], "credits_left": credits_left}
     except Exception as e:
