@@ -8,7 +8,7 @@ from pymongo import MongoClient
 app = FastAPI()
 
 # ==========================================
-# 🛡️ CORS SETUP
+# 🛡️ 1. CORS SETUP
 # ==========================================
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 # ==========================================
-# 🚀 MONGODB SETUP
+# 🚀 2. MONGODB SETUP
 # ==========================================
 MONGO_URI = os.environ.get("MONGO_URI")
 client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
@@ -35,7 +35,37 @@ def read_root():
     return {"message": "ZeroWordAi Ultimate Backend is running smoothly!"}
 
 # ==========================================
-# 📊 ANALYTICS ROUTE
+# 📧 3. USER EMAIL SYNC ROUTE (New)
+# ==========================================
+class SyncUserRequest(BaseModel):
+    userId: str
+    email: str
+
+@app.post("/api/sync-user")
+async def sync_user(req: SyncUserRequest):
+    try:
+        if users_collection is not None:
+            user = users_collection.find_one({"userId": req.userId})
+            if user:
+                # ইউজার আগে থেকেই থাকলে শুধু ইমেইল আপডেট করবে (লিমিট নষ্ট করবে না)
+                users_collection.update_one({"userId": req.userId}, {"$set": {"email": req.email}})
+            else:
+                # একদম নতুন ইউজার হলে Starter প্ল্যান দিয়ে সেভ করবে
+                users_collection.insert_one({
+                    "userId": req.userId, 
+                    "email": req.email, 
+                    "seo_words": 50000, 
+                    "bypass_words": 25000, 
+                    "plan": "Starter", 
+                    "banned": False
+                })
+            return {"success": True}
+        return {"error": "DB error"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ==========================================
+# 📊 4. ANALYTICS ROUTE
 # ==========================================
 @app.get("/api/admin/analytics")
 async def get_analytics():
@@ -52,7 +82,7 @@ async def get_analytics():
         return {"error": str(e)}
 
 # ==========================================
-# 💳 PLAN MANAGEMENT (With Sort Order & Features)
+# 💳 5. PLAN MANAGEMENT ROUTES
 # ==========================================
 class PlanModel(BaseModel):
     planId: str
@@ -69,7 +99,6 @@ async def get_plans():
         if plans_collection is not None:
             plans = list(plans_collection.find({}, {"_id": 0}))
             
-            # যদি ডেটাবেস একদম খালি থাকে, তবে ডিফল্ট প্ল্যান তৈরি করবে
             if not plans:
                 default_plans = [
                     {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Sentence and phrase level rewriting"], "sort_order": 1},
@@ -79,7 +108,7 @@ async def get_plans():
                 plans_collection.insert_many(default_plans)
                 plans = default_plans
             
-            # পজিশন (sort_order) অনুযায়ী প্ল্যানগুলো সাজিয়ে ফ্রন্টএন্ডে পাঠানো হবে
+            # 🚀 পজিশন অনুযায়ী সাজানো
             plans.sort(key=lambda x: x.get("sort_order", 99))
             return {"plans": plans}
         return {"plans": []}
@@ -101,7 +130,7 @@ async def delete_plan(plan_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# 👥 USER MANAGEMENT ROUTES
+# 👥 6. USER MANAGEMENT ROUTES
 # ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
@@ -147,7 +176,7 @@ async def delete_user(user_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# ✍️ CORE AI REWRITE ROUTE (With Word Deduction & API Check)
+# ✍️ 7. CORE AI REWRITE ROUTE (With Word Limits)
 # ==========================================
 class RewriteRequest(BaseModel):
     text: str
@@ -159,54 +188,50 @@ class RewriteRequest(BaseModel):
 @app.post("/api/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        # 1. ইনপুট টেক্সটের মোট শব্দ গণনা করা
+        # 1. ইনপুট টেক্সটের শব্দ গণনা
         input_word_count = len(req.text.split())
         if input_word_count == 0: 
             return {"error": "Text cannot be empty."}
 
-        # 2. ইউজারের মোড অনুযায়ী লিমিট ফিল্ড সিলেক্ট করা
         target_limit_field = "seo_words" if req.mode == "rewrite" else "bypass_words"
         limit_name = "SEO Rewrite" if req.mode == "rewrite" else "AI Bypass"
 
-        # 3. ইউজার ভেরিফিকেশন এবং ওয়ার্ড লিমিট চেক
+        # 2. ইউজার ভেরিফিকেশন ও লিমিট চেক
         if users_collection is not None and req.userId != "guest":
             user = users_collection.find_one({"userId": req.userId})
             if not user:
-                # নতুন ইউজার হলে Starter প্ল্যানের ডিফল্ট লিমিট পাবে
                 user = {"userId": req.userId, "seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
                 users_collection.insert_one(user)
             
-            # ব্যান চেক
             if user.get("banned", False) == True: 
                 return {"error": "Your account has been banned by the administrator."}
             
-            # লিমিট চেক
             current_words_left = user.get(target_limit_field, 0)
             if current_words_left < input_word_count:
-                return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}, but your text has {input_word_count} words. Please upgrade your plan."}
+                return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}, but your text has {input_word_count} words."}
 
-        # 4. API Key Check & AI Setup
+        # 3. Gemini API Configuration
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key: 
-            return {"error": "API Key is missing in Render environment!"}
+            return {"error": "API Key is missing!"}
             
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
         
-        # 5. প্রম্পট সিলেক্ট করা
+        # 4. প্রম্পট সিলেক্ট
         if req.mode == "avoid_ai":
             prompt = f'Expert AI Detection Bypass Specialist. Rewrite to score 100% human. Rules: High Burstiness. Text: "{req.text}". Bypass: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.' 
         else:
             prompt = f'Expert SEO Writer. Semantic SEO-optimized. Text: "{req.text}". Tone: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
 
-        # 6. AI Generation
+        # 5. AI Generation
         response = model.generate_content(prompt)
         output = response.text
         variations = [v.strip() for v in output.split("|||VARIATION|||") if v.strip()]
         if not variations: 
             variations = [output.strip()]
             
-        # 7. ডাটাবেস থেকে ঠিক ততগুলো শব্দ কেটে নেওয়া
+        # 6. ডাটাবেস থেকে শব্দ কাটা
         words_left = "Unlimited"
         if users_collection is not None and req.userId != "guest":
             users_collection.update_one(
@@ -216,7 +241,7 @@ async def rewrite_text(req: RewriteRequest):
             updated_user = users_collection.find_one({"userId": req.userId})
             words_left = updated_user.get(target_limit_field, 0)
         
-        # 8. Analytics আপডেট করা
+        # 7. Analytics আপডেট
         if analytics_collection is not None:
             analytics_collection.update_one(
                 {"_id": "global_stats"}, 
