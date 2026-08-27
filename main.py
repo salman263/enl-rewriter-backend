@@ -24,8 +24,7 @@ plans_collection = db["plans"] if db is not None else None
 analytics_collection = db["analytics"] if db is not None else None
 
 @app.get("/")
-def read_root():
-    return {"message": "Backend running with Word Count Logic!"}
+def read_root(): return {"message": "Backend running!"}
 
 @app.get("/api/admin/analytics")
 async def get_analytics():
@@ -38,11 +37,10 @@ async def get_analytics():
             "total_words_processed": stats.get("total_words", 0) if stats else 0,
             "active_database": "MongoDB Atlas"
         }
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 # ==========================================
-# 💳 PLAN MANAGEMENT (Words Limit)
+# 💳 PLAN MANAGEMENT (Words + Features)
 # ==========================================
 class PlanModel(BaseModel):
     planId: str
@@ -50,6 +48,7 @@ class PlanModel(BaseModel):
     price: int
     seo_words: int
     bypass_words: int
+    features: list[str] = []  # 🚀 নতুন: ফিচার লিস্ট যুক্ত করা হলো
 
 @app.get("/api/plans")
 async def get_plans():
@@ -58,16 +57,15 @@ async def get_plans():
             plans = list(plans_collection.find({}, {"_id": 0}))
             if not plans:
                 default_plans = [
-                    {"planId": "free", "name": "Free Plan", "price": 0, "seo_words": 5000, "bypass_words": 1000},
-                    {"planId": "pro", "name": "Pro Plan", "price": 19, "seo_words": 50000, "bypass_words": 25000},
-                    {"planId": "enterprise", "name": "Enterprise", "price": 49, "seo_words": 500000, "bypass_words": 250000}
+                    {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Sentence and phrase level rewriting"]},
+                    {"planId": "power", "name": "Power", "price": 57, "seo_words": 3000000, "bypass_words": 250000, "features": ["Pass AI detection", "AI-powered rewriter", "Human quality content", "One click rewriting", "Bulk article rewriting", "API access"]},
+                    {"planId": "enterprise", "name": "Enterprise", "price": 0, "seo_words": 9999999, "bypass_words": 9999999, "features": ["High volume usage", "Increased throughput", "White Labeled Integration", "Multiple user accounts", "Customized rewrites", "Account manager"]}
                 ]
                 plans_collection.insert_many(default_plans)
                 plans = default_plans
             return {"plans": plans}
         return {"plans": []}
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as e: return {"error": str(e)}
 
 @app.post("/api/admin/plans")
 async def save_plan(req: PlanModel):
@@ -84,28 +82,22 @@ async def delete_plan(plan_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# 👥 USER MANAGEMENT 
+# 👥 USER MANAGEMENT & REWRITE (আগের মতোই)
 # ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
     if users_collection is not None:
         user = users_collection.find_one({"userId": user_id})
-        if user: 
-            return {"seo_words": user.get("seo_words", 5000), "bypass_words": user.get("bypass_words", 1000), "plan": user.get("plan", "Free"), "banned": user.get("banned", False)}
-    return {"seo_words": 5000, "bypass_words": 1000, "plan": "Free", "banned": False}
+        if user: return {"seo_words": user.get("seo_words", 5000), "bypass_words": user.get("bypass_words", 1000), "plan": user.get("plan", "Starter"), "banned": user.get("banned", False)}
+    return {"seo_words": 5000, "bypass_words": 1000, "plan": "Starter", "banned": False}
 
 @app.get("/api/admin/users")
 async def get_all_users():
-    if users_collection is not None:
-        return {"users": list(users_collection.find({}, {"_id": 0}))}
+    if users_collection is not None: return {"users": list(users_collection.find({}, {"_id": 0}))}
     return {"users": []}
 
 class AdminActionRequest(BaseModel):
-    userId: str
-    plan: str
-    seo_words: int
-    bypass_words: int
-    banned: bool
+    userId: str; plan: str; seo_words: int; bypass_words: int; banned: bool
 
 @app.post("/api/admin/super-update")
 async def super_update_user(req: AdminActionRequest):
@@ -121,20 +113,12 @@ async def delete_user(user_id: str):
         return {"success": True}
     return {"error": "DB error"}
 
-# ==========================================
-# ✍️ REWRITE ROUTE (Smart Word Deduction)
-# ==========================================
 class RewriteRequest(BaseModel):
-    text: str
-    tone: str
-    num_rewrites: int = 1
-    mode: str = "rewrite"
-    userId: str = "guest"
+    text: str; tone: str; num_rewrites: int = 1; mode: str = "rewrite"; userId: str = "guest"
 
 @app.post("/api/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        # 1. ইনপুট টেক্সটের মোট শব্দ গণনা করা
         input_word_count = len(req.text.split())
         if input_word_count == 0: return {"error": "Text cannot be empty."}
 
@@ -144,49 +128,35 @@ async def rewrite_text(req: RewriteRequest):
         if users_collection is not None and req.userId != "guest":
             user = users_collection.find_one({"userId": req.userId})
             if not user:
-                user = {"userId": req.userId, "seo_words": 5000, "bypass_words": 1000, "plan": "Free", "banned": False}
+                user = {"userId": req.userId, "seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
                 users_collection.insert_one(user)
             
-            if user.get("banned", False) == True:
-                return {"error": "Account banned."}
+            if user.get("banned", False) == True: return {"error": "Account banned."}
             
-            # 2. ইউজারের লিমিট চেক করা
             current_words_left = user.get(target_limit_field, 0)
             if current_words_left < input_word_count:
-                return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}, but your text has {input_word_count} words. Please upgrade your plan."}
+                return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}."}
 
-        # 3. AI Generation
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key: return {"error": "API Key is missing!"}
             
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
-
-        if req.mode == "avoid_ai":
-            prompt = f'Expert AI Detection Bypass Specialist. Rewrite to score 100% human. Text: "{req.text}". Bypass: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
-        else:
-            prompt = f'Expert SEO Writer. Semantic SEO-optimized. Text: "{req.text}". Tone: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
+        prompt = f'Expert AI Detection Bypass Specialist. Rewrite to score 100% human. Text: "{req.text}". Bypass: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.' if req.mode == "avoid_ai" else f'Expert SEO Writer. Semantic SEO-optimized. Text: "{req.text}". Tone: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
 
         response = model.generate_content(prompt)
         output = response.text
         variations = [v.strip() for v in output.split("|||VARIATION|||") if v.strip()]
         if not variations: variations = [output.strip()]
             
-        # 4. ডাটাবেস থেকে ঠিক ততগুলো শব্দ কেটে নেওয়া
         words_left = "Unlimited"
         if users_collection is not None and req.userId != "guest":
             users_collection.update_one({"userId": req.userId}, {"$inc": {target_limit_field: -input_word_count}})
             updated_user = users_collection.find_one({"userId": req.userId})
             words_left = updated_user.get(target_limit_field, 0)
         
-        # Analytics Update
         if analytics_collection is not None:
-            analytics_collection.update_one(
-                {"_id": "global_stats"},
-                {"$inc": {"total_rewrites": 1, "total_words": input_word_count}},
-                upsert=True
-            )
+            analytics_collection.update_one({"_id": "global_stats"}, {"$inc": {"total_rewrites": 1, "total_words": input_word_count}}, upsert=True)
         
         return {"rewrites": variations[:req.num_rewrites], "words_left": words_left}
-    except Exception as e:
-        return {"error": f"Backend Error: {str(e)}"}
+    except Exception as e: return {"error": f"Backend Error: {str(e)}"}
