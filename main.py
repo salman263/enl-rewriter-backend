@@ -1,7 +1,7 @@
 import os
 import random
 import string
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -35,7 +35,7 @@ coupons_collection = db["coupons"] if db is not None else None
 
 @app.get("/")
 def read_root(): 
-    return {"message": "ZeroWordAi Ultimate Backend is running smoothly!"}
+    return {"message": "ZeroWordAi Backend (With Bulk Delete Coupons)"}
 
 # ==========================================
 # 📧 3. USER EMAIL SYNC ROUTE
@@ -55,9 +55,9 @@ async def sync_user(req: SyncUserRequest):
                 users_collection.insert_one({
                     "userId": req.userId, 
                     "email": req.email, 
-                    "seo_words": 50000, 
-                    "bypass_words": 25000, 
-                    "plan": "Starter", 
+                    "seo_words": 5000, 
+                    "bypass_words": 1000, 
+                    "plan": "Free", 
                     "banned": False,
                     "expiry_date": None
                 })
@@ -101,13 +101,6 @@ async def get_plans():
     try:
         if plans_collection is not None:
             plans = list(plans_collection.find({}, {"_id": 0}))
-            if not plans:
-                default_plans = [
-                    {"planId": "starter", "name": "Starter", "price": 17, "seo_words": 50000, "bypass_words": 25000, "features": ["Pass AI detection"], "sort_order": 1, "duration_days": 30},
-                    {"planId": "power", "name": "Power", "price": 57, "seo_words": 3000000, "bypass_words": 250000, "features": ["API access"], "sort_order": 2, "duration_days": 30}
-                ]
-                plans_collection.insert_many(default_plans)
-                plans = default_plans
             plans.sort(key=lambda x: x.get("sort_order", 99))
             return {"plans": plans}
         return {"plans": []}
@@ -129,7 +122,7 @@ async def delete_plan(plan_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# 🎁 6. COUPON MANAGEMENT (AppSumo)
+# 🎁 6. COUPON GENERATE, REDEEM & DELETE
 # ==========================================
 class GenerateCouponReq(BaseModel):
     plan_name: str
@@ -141,8 +134,7 @@ async def generate_coupons(req: GenerateCouponReq):
     try:
         if coupons_collection is not None and plans_collection is not None:
             plan = plans_collection.find_one({"name": req.plan_name})
-            if not plan: 
-                return {"error": "Plan not found!"}
+            if not plan: return {"error": "Plan not found!"}
 
             new_coupons = []
             for _ in range(req.count):
@@ -154,8 +146,7 @@ async def generate_coupons(req: GenerateCouponReq):
                     "seo_words": plan.get("seo_words", 0), 
                     "bypass_words": plan.get("bypass_words", 0),
                     "duration_days": plan.get("duration_days", 30),
-                    "is_used": False, 
-                    "used_by": None, 
+                    "is_used": False, "used_by": None, 
                     "created_at": datetime.now().isoformat()
                 })
             
@@ -172,6 +163,55 @@ async def get_coupons():
         return {"coupons": coupons}
     return {"coupons": []}
 
+# 🚀 NEW: Delete Single Coupon
+@app.delete("/api/admin/coupons/{code}")
+async def delete_coupon(code: str):
+    if coupons_collection is not None:
+        coupons_collection.delete_one({"code": code})
+        return {"success": True}
+    return {"error": "DB error"}
+
+# 🚀 NEW: Bulk Delete ALL Coupons
+@app.delete("/api/admin/coupons-bulk")
+async def bulk_delete_coupons():
+    if coupons_collection is not None:
+        coupons_collection.delete_many({})
+        return {"success": True}
+    return {"error": "DB error"}
+
+class RedeemCouponReq(BaseModel):
+    userId: str
+    code: str
+
+@app.post("/api/redeem-coupon")
+async def redeem_coupon(req: RedeemCouponReq):
+    try:
+        if coupons_collection is not None and users_collection is not None:
+            coupon = coupons_collection.find_one({"code": req.code, "is_used": False})
+            if not coupon:
+                return {"error": "Invalid or already used promo code!"}
+            
+            coupons_collection.update_one({"code": req.code}, {"$set": {"is_used": True, "used_by": req.userId}})
+            
+            duration = coupon.get("duration_days", 30)
+            expiry_date = None
+            if duration > 0:
+                expiry_date = (datetime.now() + timedelta(days=duration)).isoformat()
+
+            users_collection.update_one(
+                {"userId": req.userId}, 
+                {"$set": {
+                    "plan": coupon["plan_name"],
+                    "seo_words": coupon["seo_words"],
+                    "bypass_words": coupon["bypass_words"],
+                    "expiry_date": expiry_date
+                }}
+            )
+            return {"success": True}
+        return {"error": "Database error"}
+    except Exception as e:
+        return {"error": str(e)}
+
 # ==========================================
 # 👥 7. USER MANAGEMENT ROUTES
 # ==========================================
@@ -181,13 +221,13 @@ async def get_user_data(user_id: str):
         user = users_collection.find_one({"userId": user_id})
         if user: 
             return {
-                "seo_words": user.get("seo_words", 50000), 
-                "bypass_words": user.get("bypass_words", 25000), 
-                "plan": user.get("plan", "Starter"), 
+                "seo_words": user.get("seo_words", 5000), 
+                "bypass_words": user.get("bypass_words", 1000), 
+                "plan": user.get("plan", "Free"), 
                 "banned": user.get("banned", False),
                 "expiry_date": user.get("expiry_date")
             }
-    return {"seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
+    return {"seo_words": 5000, "bypass_words": 1000, "plan": "Free", "banned": False}
 
 @app.get("/api/admin/users")
 async def get_all_users():
@@ -242,7 +282,7 @@ async def rewrite_text(req: RewriteRequest):
         if users_collection is not None and req.userId != "guest":
             user = users_collection.find_one({"userId": req.userId})
             if not user:
-                user = {"userId": req.userId, "seo_words": 50000, "bypass_words": 25000, "plan": "Starter", "banned": False}
+                user = {"userId": req.userId, "seo_words": 5000, "bypass_words": 1000, "plan": "Free", "banned": False}
                 users_collection.insert_one(user)
             
             if user.get("banned", False) == True: 
@@ -250,7 +290,7 @@ async def rewrite_text(req: RewriteRequest):
             
             current_words_left = user.get(target_limit_field, 0)
             if current_words_left < input_word_count:
-                return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}, but your text has {input_word_count} words."}
+                return {"error": f"Limit Reached! You have {current_words_left} words left for {limit_name}."}
 
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key: 
