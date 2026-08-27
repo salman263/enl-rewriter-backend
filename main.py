@@ -7,7 +7,6 @@ from pymongo import MongoClient
 
 app = FastAPI()
 
-# CORS Setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,24 +15,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🚀 MongoDB Connection Setup
 MONGO_URI = os.environ.get("MONGO_URI")
 client_mongo = MongoClient(MONGO_URI) if MONGO_URI else None
 db = client_mongo["zerowordai"] if client_mongo else None
 users_collection = db["users"] if db is not None else None
 
-class RewriteRequest(BaseModel):
-    text: str
-    tone: str
-    num_rewrites: int = 1
-    mode: str = "rewrite"
-    userId: str = "guest"
-
 @app.get("/")
 def read_root():
-    return {"message": "AI Backend with Admin & Pricing System is running!"}
+    return {"message": "AI Backend with Ultimate Admin Control is running!"}
 
-# 1. 🔍 ইউজারের ক্রেডিট ও প্ল্যান চেক করার রাউট
+# 1. 🔍 Get User Data
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
     try:
@@ -42,13 +33,14 @@ async def get_user_data(user_id: str):
             if user:
                 return {
                     "credits": user.get("credits", 5),
-                    "plan": user.get("plan", "Free")
+                    "plan": user.get("plan", "Free"),
+                    "banned": user.get("banned", False)
                 }
-        return {"credits": 5, "plan": "Free"}
+        return {"credits": 5, "plan": "Free", "banned": False}
     except Exception as e:
         return {"error": str(e)}
 
-# 2. 👑 অ্যাডমিন রাউট: সব ইউজারের লিস্ট দেখার জন্য (Future scalable)
+# 2. 👑 Get All Users
 @app.get("/api/admin/users")
 async def get_all_users():
     try:
@@ -59,7 +51,7 @@ async def get_all_users():
     except Exception as e:
         return {"error": str(e)}
 
-# 3. 💳 প্রাইসিং প্ল্যান আপডেট করার রাউট (Stripe বা Manual Upgrade এর জন্য)
+# 3. 💳 Update Plan from Pricing Page
 class PlanUpgradeRequest(BaseModel):
     userId: str
     plan: str
@@ -67,75 +59,87 @@ class PlanUpgradeRequest(BaseModel):
 
 @app.post("/api/admin/upgrade-plan")
 async def upgrade_plan(req: PlanUpgradeRequest):
+    if users_collection is not None:
+        users_collection.update_one({"userId": req.userId}, {"$set": {"plan": req.plan, "credits": req.credits}})
+        return {"success": True}
+    return {"error": "DB not connected"}
+
+# 4. 🚀 ULTIMATE ADMIN ACTION ROUTE (Set Credits, Ban, Unban)
+class AdminActionRequest(BaseModel):
+    userId: str
+    plan: str
+    credits: int
+    banned: bool
+
+@app.post("/api/admin/super-update")
+async def super_update_user(req: AdminActionRequest):
     try:
         if users_collection is not None:
             users_collection.update_one(
                 {"userId": req.userId},
-                {"$set": {"plan": req.plan, "credits": req.credits}}
+                {"$set": {"plan": req.plan, "credits": req.credits, "banned": req.banned}}
             )
-            return {"success": True, "message": f"User upgraded to {req.plan} successfully!"}
+            return {"success": True, "message": "User updated successfully!"}
         return {"error": "Database not connected"}
     except Exception as e:
         return {"error": str(e)}
 
+# 5. 🗑️ DELETE USER ROUTE
+@app.delete("/api/admin/delete-user/{user_id}")
+async def delete_user(user_id: str):
+    try:
+        if users_collection is not None:
+            users_collection.delete_one({"userId": user_id})
+            return {"success": True, "message": "User deleted!"}
+        return {"error": "DB error"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# 6. ✍️ REWRITE ROUTE (With Ban Protection)
+class RewriteRequest(BaseModel):
+    text: str
+    tone: str
+    num_rewrites: int = 1
+    mode: str = "rewrite"
+    userId: str = "guest"
+
 @app.post("/api/rewrite")
 async def rewrite_text(req: RewriteRequest):
     try:
-        # 1. 🛡️ AUTH & CREDIT CHECK
         if users_collection is not None and req.userId != "guest":
             user = users_collection.find_one({"userId": req.userId})
-            
             if not user:
-                # নতুন ইউজার হলে Free প্ল্যানে ৫ ক্রেডিট দিয়ে সেভ হবে
-                user = {"userId": req.userId, "credits": 5, "plan": "Free"}
+                user = {"userId": req.userId, "credits": 5, "plan": "Free", "banned": False}
                 users_collection.insert_one(user)
             
-            # ক্রেডিট শেষ কি না চেক
-            if user.get("credits", 0) <= 0:
-                return {"error": "Limit Reached! Please upgrade your plan to get more credits."}
+            # 🚨 BAN CHECK
+            if user.get("banned", False) == True:
+                return {"error": "Your account has been banned by the administrator. Contact support."}
 
-        # 2. 🚀 GEMINI AI SETUP
+            if user.get("credits", 0) <= 0:
+                return {"error": "Limit Reached! Please upgrade your plan."}
+
         api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            return {"error": "API Key is missing in environment!"}
+        if not api_key: return {"error": "API Key is missing!"}
             
         genai.configure(api_key=api_key)
-        ai_model_name = os.environ.get("GEMINI_MODEL", "gemini-pro")
-        model = genai.GenerativeModel(ai_model_name)
+        model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
 
-        # 3. 🧠 PROMPTS
         if req.mode == "avoid_ai":
-            prompt = f"""You are an expert AI Detection Bypass Specialist. Rewrite the text to score 100% human.
-            Original Text: "{req.text}"
-            Rules: High Burstiness, High Perplexity. Do not use typical robotic AI words. Bypass Level: {req.tone}.
-            Return EXACTLY {req.num_rewrites} variations separated by |||VARIATION|||. No extra text."""
+            prompt = f'Expert AI Detection Bypass Specialist. Rewrite to score 100% human. Rules: High Burstiness. Text: "{req.text}". Bypass: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
         else:
-            prompt = f"""You are an Expert SEO Content Writer. Rewrite the text to be Semantic SEO-optimized.
-            Original Text: "{req.text}"
-            Rules: Preserve entities, use LSI keywords naturally. Tone: {req.tone}.
-            Return EXACTLY {req.num_rewrites} variations separated by |||VARIATION|||. No extra text."""
+            prompt = f'Expert SEO Writer. Semantic SEO-optimized. Text: "{req.text}". Tone: {req.tone}. Return {req.num_rewrites} versions separated by |||VARIATION|||.'
 
         response = model.generate_content(prompt)
         output = response.text
-        
         variations = [v.strip() for v in output.split("|||VARIATION|||") if v.strip()]
-        if not variations:
-            variations = [output.strip()]
+        if not variations: variations = [output.strip()]
             
-        # 4. 💰 DEDUCT CREDIT
         credits_left = "Unlimited"
         if users_collection is not None and req.userId != "guest":
-            users_collection.update_one(
-                {"userId": req.userId},
-                {"$inc": {"credits": -1}}
-            )
-            updated_user = users_collection.find_one({"userId": req.userId})
-            credits_left = updated_user.get("credits", 0)
+            users_collection.update_one({"userId": req.userId}, {"$inc": {"credits": -1}})
+            credits_left = users_collection.find_one({"userId": req.userId}).get("credits", 0)
         
-        return {
-            "rewrites": variations[:req.num_rewrites],
-            "credits_left": credits_left
-        }
-        
+        return {"rewrites": variations[:req.num_rewrites], "credits_left": credits_left}
     except Exception as e:
         return {"error": f"Backend Error: {str(e)}"}
