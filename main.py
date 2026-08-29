@@ -410,7 +410,9 @@ async def external_api_rewrite(req: ExternalApiRequest, authorization: str = Hea
             return {"error": "Unauthorized. Missing or invalid Bearer token."}
             
         api_key_extracted = authorization.split("Bearer ")[1].strip()
-        if not users_collection:
+        
+        # 🚀 FIXED HERE: PyMongo requires 'is None' check
+        if users_collection is None:
             return {"error": "Database connection error"}
             
         user = users_collection.find_one({"api_key": api_key_extracted})
@@ -443,7 +445,8 @@ async def external_api_rewrite(req: ExternalApiRequest, authorization: str = Hea
 
         # 4. Deduct Words & Update Stats
         users_collection.update_one({"userId": user["userId"]}, {"$inc": {target_limit_field: -input_word_count}})
-        analytics_collection.update_one({"_id": "global_stats"}, {"$inc": {"total_rewrites": 1, "total_words": input_word_count}}, upsert=True)
+        if analytics_collection is not None:
+            analytics_collection.update_one({"_id": "global_stats"}, {"$inc": {"total_rewrites": 1, "total_words": input_word_count}}, upsert=True)
 
         return {
             "success": True,
