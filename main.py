@@ -3,7 +3,7 @@ import random
 import string
 import uuid
 from datetime import datetime, timedelta
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
@@ -37,10 +37,10 @@ saved_articles_collection = db["saved_articles"] if db is not None else None
 
 @app.get("/")
 def read_root(): 
-    return {"message": "ZeroWordAi Backend (With Strict Prompting)"}
+    return {"message": "ZeroWordAi Backend (With Strict Prompting & Developer API)"}
 
 # ==========================================
-# 📧 3. USER EMAIL SYNC ROUTE
+# 📧 3. USER EMAIL SYNC & API KEY GENERATION
 # ==========================================
 class SyncUserRequest(BaseModel):
     userId: str
@@ -52,7 +52,11 @@ async def sync_user(req: SyncUserRequest):
         if users_collection is not None:
             user = users_collection.find_one({"userId": req.userId})
             if user:
-                users_collection.update_one({"userId": req.userId}, {"$set": {"email": req.email}})
+                update_data = {"email": req.email}
+                # 🚀 Generate API key if not exists
+                if "api_key" not in user:
+                    update_data["api_key"] = f"sk-live-{uuid.uuid4().hex}"
+                users_collection.update_one({"userId": req.userId}, {"$set": update_data})
             else:
                 users_collection.insert_one({
                     "userId": req.userId, 
@@ -61,7 +65,8 @@ async def sync_user(req: SyncUserRequest):
                     "bypass_words": 1000, 
                     "plan": "Free", 
                     "banned": False,
-                    "expiry_date": None
+                    "expiry_date": None,
+                    "api_key": f"sk-live-{uuid.uuid4().hex}" # 🚀 Initial API Key
                 })
             return {"success": True}
         return {"error": "DB error"}
@@ -254,21 +259,38 @@ async def delete_saved_article(article_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# 👥 8. USER MANAGEMENT ROUTES
+# 👥 8. USER MANAGEMENT & API KEY ROUTES
 # ==========================================
 @app.get("/api/user/{user_id}")
 async def get_user_data(user_id: str):
     if users_collection is not None:
         user = users_collection.find_one({"userId": user_id})
         if user: 
+            # 🚀 Ensure existing users get an API key if they check their profile
+            if "api_key" not in user:
+                new_key = f"sk-live-{uuid.uuid4().hex}"
+                users_collection.update_one({"userId": user_id}, {"$set": {"api_key": new_key}})
+                user["api_key"] = new_key
+
             return {
                 "seo_words": user.get("seo_words", 5000), 
                 "bypass_words": user.get("bypass_words", 1000), 
                 "plan": user.get("plan", "Free"), 
                 "banned": user.get("banned", False),
+                "api_key": user.get("api_key", ""), # 🚀 Return API Key to frontend
                 "expiry_date": user.get("expiry_date")
             }
-    return {"seo_words": 5000, "bypass_words": 1000, "plan": "Free", "banned": False}
+    return {"seo_words": 5000, "bypass_words": 1000, "plan": "Free", "banned": False, "api_key": ""}
+
+# 🚀 NEW: Route to regenerate API Key from dashboard
+@app.post("/api/user/{user_id}/regenerate-key")
+async def regenerate_api_key(user_id: str):
+    if users_collection is not None:
+        new_key = f"sk-live-{uuid.uuid4().hex}"
+        result = users_collection.update_one({"userId": user_id}, {"$set": {"api_key": new_key}})
+        if result.modified_count > 0:
+            return {"success": True, "api_key": new_key}
+    return {"error": "User not found or DB error"}
 
 @app.get("/api/admin/users")
 async def get_all_users():
@@ -301,7 +323,7 @@ async def delete_user(user_id: str):
     return {"error": "DB error"}
 
 # ==========================================
-# ✍️ 9. CORE AI REWRITE ROUTE (UPDATED PROMPT)
+# ✍️ 9. CORE AI REWRITE ROUTE (Internal Dashboard)
 # ==========================================
 class RewriteRequest(BaseModel):
     text: str
@@ -340,7 +362,6 @@ async def rewrite_text(req: RewriteRequest):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
         
-        # 🚀 NEW STRICT PROMPTS TO AVOID MARKDOWN
         if req.mode == "avoid_ai":
             prompt = f'Act as an expert human writer. Rewrite the text to bypass AI detection (100% human score). Rules: 1. Maintain the exact same paragraph structure as the original text. 2. DO NOT use any markdown formatting (no #, no *, no **). Output plain text only. Text: "{req.text}". Tone: {req.tone}. Return exactly {req.num_rewrites} versions separated by |||VARIATION|||.' 
         else:
@@ -372,3 +393,64 @@ async def rewrite_text(req: RewriteRequest):
     
     except Exception as e: 
         return {"error": f"Backend Error: {str(e)}"}
+
+# ==========================================
+# 🌐 10. EXTERNAL DEVELOPER API ROUTE (/api/v1/rewrite)
+# ==========================================
+class ExternalApiRequest(BaseModel):
+    text: str
+    mode: str = "rewrite" # rewrite or avoid_ai
+    tone: str = "Regular"
+
+@app.post("/api/v1/rewrite")
+async def external_api_rewrite(req: ExternalApiRequest, authorization: str = Header(None)):
+    try:
+        # 1. Validate API Key
+        if not authorization or not authorization.startswith("Bearer "):
+            return {"error": "Unauthorized. Missing or invalid Bearer token."}
+            
+        api_key_extracted = authorization.split("Bearer ")[1].strip()
+        if not users_collection:
+            return {"error": "Database connection error"}
+            
+        user = users_collection.find_one({"api_key": api_key_extracted})
+        if not user:
+            return {"error": "Invalid API Key. Please check your dashboard."}
+            
+        if user.get("banned", False):
+            return {"error": "Account suspended. Please contact support."}
+
+        # 2. Check Word Limits
+        input_word_count = len(req.text.split())
+        target_limit_field = "seo_words" if req.mode == "rewrite" else "bypass_words"
+        limit_name = "SEO Rewrite" if req.mode == "rewrite" else "AI Bypass"
+        
+        current_words_left = user.get(target_limit_field, 0)
+        if current_words_left < input_word_count:
+            return {"error": f"Insufficient balance. You have {current_words_left} words left for {limit_name}."}
+
+        # 3. Process AI Generation
+        genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+        model = genai.GenerativeModel(os.environ.get("GEMINI_MODEL", "gemini-pro"))
+        
+        if req.mode == "avoid_ai":
+            prompt = f'Act as an expert human writer. Rewrite the text to bypass AI detection (100% human score). Rules: 1. Maintain the exact same paragraph structure. 2. Output plain text only (no markdown). Text: "{req.text}". Tone: {req.tone}.' 
+        else:
+            prompt = f'Act as an expert SEO writer. Rewrite the text for semantic SEO. Rules: 1. Maintain the exact same paragraph structure. 2. Output plain text only (no markdown). Text: "{req.text}". Tone: {req.tone}.'
+
+        response = model.generate_content(prompt)
+        result_text = response.text.strip()
+
+        # 4. Deduct Words & Update Stats
+        users_collection.update_one({"userId": user["userId"]}, {"$inc": {target_limit_field: -input_word_count}})
+        analytics_collection.update_one({"_id": "global_stats"}, {"$inc": {"total_rewrites": 1, "total_words": input_word_count}}, upsert=True)
+
+        return {
+            "success": True,
+            "original_words": input_word_count,
+            "rewritten_text": result_text,
+            "words_remaining": current_words_left - input_word_count
+        }
+
+    except Exception as e:
+        return {"error": f"API Error: {str(e)}"}
